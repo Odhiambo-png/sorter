@@ -1,51 +1,106 @@
 #include <Servo.h>
+#include <Wire.h>
+#include <Adafruit_GFX.h>
+#include <Adafruit_SSD1306.h>
+
+#define SCREEN_WIDTH 128
+#define SCREEN_HEIGHT 64
+
+Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, -1);
 
 Servo myServo;
 
 int waterSensor = A0;
+
 int trig = 6;
 int echo = 7;
 
 int dryCount = 0;
+
+bool objectDetected = false;
 
 void setup() {
 
   Serial.begin(9600);
 
   myServo.attach(9);
-  myServo.write(90);
+  myServo.write(90); // neutral position
 
   pinMode(trig, OUTPUT);
   pinMode(echo, INPUT);
+
+  if(!display.begin(SSD1306_SWITCHCAPVCC, 0x3C)) {
+    Serial.println("OLED failed");
+    while(true);
+  }
+
+  display.clearDisplay();
+  display.setTextSize(2);
+  display.setTextColor(WHITE);
+  display.setCursor(10,20);
+  display.println("SMART BIN");
+  display.display();
+
+  delay(2000);
 }
 
 void loop() {
 
-  int waterValue = analogRead(waterSensor);
-  Serial.println(waterValue);
+  int distance = getDistance();
 
-  if (waterValue > 500) {   // WET WASTE
-    myServo.write(150);
-    delay(2000);
-    myServo.write(90);
-  }
+  Serial.print("Distance: ");
+  Serial.println(distance);
 
-  else {   // DRY WASTE
-    myServo.write(30);
-    delay(2000);
-    myServo.write(90);
+  updateDisplay(distance);
 
-    if (detectObject()) {
+  // Detect waste
+  if(distance < 5 && objectDetected == false){
+
+    objectDetected = true;
+
+    delay(300); // allow object to settle
+
+    int waterValue = analogRead(waterSensor);
+
+    Serial.print("Water Value: ");
+    Serial.println(waterValue);
+
+    // WET WASTE
+    if(waterValue > 500){
+
+      Serial.println("Wet waste");
+
+      displayStatus("Wet Waste");
+
+      myServo.write(150);
+      delay(2000);
+      myServo.write(90);
+    }
+
+    // DRY WASTE
+    else{
+
+      Serial.println("Dry waste");
+
+      displayStatus("Dry Waste");
+
+      myServo.write(30);
+      delay(2000);
+      myServo.write(90);
+
       dryCount++;
-      Serial.print("Dry waste count: ");
-      Serial.println(dryCount);
     }
   }
 
-  delay(1000);
+  // Reset detection after object leaves
+  if(distance > 8){
+    objectDetected = false;
+  }
+
+  delay(200);
 }
 
-bool detectObject() {
+int getDistance(){
 
   digitalWrite(trig, LOW);
   delayMicroseconds(2);
@@ -58,10 +113,48 @@ bool detectObject() {
 
   int distance = duration * 0.034 / 2;
 
-  if (distance < 10) {
-    delay(1000);
-    return true;
-  }
+  return distance;
+}
 
-  return false;
+void updateDisplay(int distance){
+
+  display.clearDisplay();
+
+  display.setTextSize(1);
+  display.setCursor(0,0);
+  display.println("SMART BIN");
+
+  display.setCursor(0,15);
+  display.print("Dry Count: ");
+  display.println(dryCount);
+
+  display.setCursor(0,30);
+  display.print("Distance: ");
+  display.print(distance);
+  display.println(" cm");
+
+  display.setCursor(0,50);
+  display.println("Status: Waiting");
+
+  display.display();
+}
+
+void displayStatus(String status){
+
+  display.clearDisplay();
+
+  display.setTextSize(1);
+  display.setCursor(0,0);
+  display.println("SMART BIN");
+
+  display.setCursor(0,20);
+  display.print("Detected:");
+
+  display.setTextSize(2);
+  display.setCursor(0,35);
+  display.println(status);
+
+  display.display();
+
+  delay(1000);
 }
