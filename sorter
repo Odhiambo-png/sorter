@@ -2,11 +2,14 @@
 #include <Wire.h>
 #include <Adafruit_GFX.h>
 #include <Adafruit_SSD1306.h>
+#include <SoftwareSerial.h>
 
 #define SCREEN_WIDTH 128
 #define SCREEN_HEIGHT 64
 
-Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, -1);
+Adafruit_SSD1306 display(128,64,&Wire,-1);
+
+SoftwareSerial BT(10,11);   // RX, TX
 
 Servo myServo;
 
@@ -19,139 +22,169 @@ int wetCount = 0;
 int dryCount = 0;
 
 bool objectDetected = false;
-bool wetDetected = false;
 
-void setup() {
+bool wetAlertSent = false;
+bool dryAlertSent = false;
 
-  Serial.begin(9600);
+void setup(){
 
-  myServo.attach(9);
-  myServo.write(90);
+Serial.begin(9600);
+BT.begin(9600);
 
-  pinMode(trig, OUTPUT);
-  pinMode(echo, INPUT);
+Wire.begin();
 
-  if(!display.begin(SSD1306_SWITCHCAPVCC, 0x3C)) {
-    Serial.println("OLED failed");
-    while(true);
-  }
+myServo.attach(9);
+myServo.write(90);
 
-  display.clearDisplay();
-  display.setTextSize(2);
-  display.setCursor(10,20);
-  display.println("SMART BIN");
-  display.display();
+pinMode(trig,OUTPUT);
+pinMode(echo,INPUT);
 
-  delay(2000);
+if(!display.begin(SSD1306_SWITCHCAPVCC,0x3C)){
+Serial.println("OLED failed");
+while(true);
 }
 
-void loop() {
+display.setTextColor(WHITE);
 
-  int waterValue = analogRead(waterSensor);
-  int distance = getDistance();
+display.clearDisplay();
+display.setTextSize(2);
+display.setCursor(15,20);
+display.println("SMART BIN");
+display.display();
 
-  Serial.print("Water: ");
-  Serial.print(waterValue);
-  Serial.print("  Distance: ");
-  Serial.println(distance);
+delay(2000);
+}
 
-  // WET WASTE DETECTION
-  if(waterValue > 500 && wetDetected == false){
+void loop(){
 
-    wetDetected = true;
+int waterValue = analogRead(waterSensor);
+int distance = getDistance();
 
-    Serial.println("Wet Waste Detected");
+Serial.print("Water: ");
+Serial.print(waterValue);
+Serial.print(" Distance: ");
+Serial.println(distance);
 
-    wetCount++;
+/* -------- WET WASTE -------- */
 
-    showWet();
+if(waterValue > 500){
 
-    myServo.write(150);
-    delay(2000);
-    myServo.write(90);
+wetCount++;
 
-    delay(2000);
-  }
+showStatus("WET WASTE");
 
-  // DRY WASTE DETECTION
-  else if(distance < 5 && objectDetected == false){
+myServo.write(150);
+delay(2000);
+myServo.write(90);
 
-    objectDetected = true;
+delay(2000);
+}
 
-    Serial.println("Dry Waste Detected");
+/* -------- DRY WASTE -------- */
 
-    dryCount++;
+else if(distance < 5 && objectDetected == false){
 
-    showDry();
+objectDetected = true;
 
-    myServo.write(30);
-    delay(2000);
-    myServo.write(90);
+dryCount++;
 
-    delay(2000);
-  }
+showStatus("DRY WASTE");
 
-  if(distance > 8){
-    objectDetected = false;
-  }
+myServo.write(30);
+delay(2000);
+myServo.write(90);
 
-  if(waterValue < 400){
-    wetDetected = false;
-  }
+delay(2000);
+}
 
-  delay(200);
+if(distance > 8){
+objectDetected = false;
+}
+
+updateDisplay();
+
+sendBluetoothAlerts();
+
+delay(200);
 }
 
 int getDistance(){
 
-  digitalWrite(trig, LOW);
-  delayMicroseconds(2);
+digitalWrite(trig,LOW);
+delayMicroseconds(2);
 
-  digitalWrite(trig, HIGH);
-  delayMicroseconds(10);
-  digitalWrite(trig, LOW);
+digitalWrite(trig,HIGH);
+delayMicroseconds(10);
+digitalWrite(trig,LOW);
 
-  long duration = pulseIn(echo, HIGH, 30000);
+long duration = pulseIn(echo,HIGH,30000);
 
-  int distance = duration * 0.034 / 2;
+int distance = duration * 0.034 / 2;
 
-  return distance;
+return distance;
 }
 
-void showWet(){
+/* -------- OLED DISPLAY -------- */
 
-  display.clearDisplay();
+void updateDisplay(){
 
-  display.setTextSize(3);
-  display.setCursor(0,0);
-  display.println("WET");
+display.clearDisplay();
 
-  display.setCursor(0,30);
-  display.println("WASTE");
+display.setTextSize(2);
 
-  display.setTextSize(2);
-  display.setCursor(0,54);
-  display.print("C:");
-  display.print(wetCount);
+display.setCursor(0,0);
+display.print("W:");
+display.print(wetCount);
 
-  display.display();
+display.setCursor(70,0);
+display.print("D:");
+display.print(dryCount);
+
+display.display();
 }
 
-void showDry(){
+void showStatus(String message){
 
-  display.clearDisplay();
+display.clearDisplay();
 
-  display.setTextSize(3);
-  display.setCursor(0,0);
-  display.println("DRY");
+display.setTextSize(2);
 
-  display.setCursor(0,30);
-  display.println("WASTE");
+display.setCursor(0,0);
+display.print("W:");
+display.print(wetCount);
 
-  display.setTextSize(2);
-  display.setCursor(0,54);
-  display.print("C:");
-  display.print(dryCount);
+display.setCursor(70,0);
+display.print("D:");
+display.print(dryCount);
 
-  display.display();
+display.setCursor(0,35);
+display.println(message);
+
+display.display();
+}
+
+/* -------- BLUETOOTH ALERT -------- */
+
+void sendBluetoothAlerts(){
+
+if(wetCount >= 5 && wetAlertSent == false){
+
+BT.println("VERDEON ALERT");
+BT.println("WET WASTE FULL");
+
+Serial.println("Wet alert sent");
+
+wetAlertSent = true;
+}
+
+if(dryCount >= 5 && dryAlertSent == false){
+
+BT.println("VERDEON ALERT");
+BT.println("DRY WASTE FULL");
+
+Serial.println("Dry alert sent");
+
+dryAlertSent = true;
+}
+
 }
