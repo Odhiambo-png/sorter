@@ -1,190 +1,185 @@
-#include <Servo.h>
 #include <Wire.h>
 #include <Adafruit_GFX.h>
 #include <Adafruit_SSD1306.h>
+#include <Servo.h>
 #include <SoftwareSerial.h>
 
+// ---------------- OLED ----------------
 #define SCREEN_WIDTH 128
 #define SCREEN_HEIGHT 64
+#define OLED_ADDR 0x3C
+Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, -1);
 
-Adafruit_SSD1306 display(128,64,&Wire,-1);
+// ---------------- PINS ----------------
+#define MOISTURE_PIN A0
+#define SERVO_PIN 8
+#define TRIG_PIN 6
+#define ECHO_PIN 7
 
-SoftwareSerial BT(10,11);   // RX, TX
+#define BT_RX 10
+#define BT_TX 11
+SoftwareSerial BT(BT_RX, BT_TX);
 
+// ---------------- OBJECTS ----------------
 Servo myServo;
 
-int waterSensor = A0;
-
-int trig = 6;
-int echo = 7;
-
+// ---------------- VARIABLES ----------------
 int wetCount = 0;
 int dryCount = 0;
 
-bool objectDetected = false;
+bool actionLock = false;
 
-bool wetAlertSent = false;
-bool dryAlertSent = false;
+unsigned long decisionStart = 0;
+unsigned long previousMillis = 0;
 
-void setup(){
+int state = 0;
+// 0 = Ready
+// 1 = Waiting decision (1 sec)
+// 2 = Result
+// 3 = Thank You
 
-Serial.begin(9600);
-BT.begin(9600);
+// ---------------- SETTINGS ----------------
+#define WET_THRESHOLD 480
 
-Wire.begin();
+// ---------------- DISPLAY ----------------
+void updateDisplay(const char* message) {
+  display.clearDisplay();
 
-myServo.attach(9);
-myServo.write(90);
+  display.setTextColor(SSD1306_WHITE);
 
-pinMode(trig,OUTPUT);
-pinMode(echo,INPUT);
+  display.setTextSize(2);
+  display.setCursor(0, 0);
+  display.print("W=");
+  display.print(wetCount);
+  display.print(" D=");
+  display.print(dryCount);
 
-if(!display.begin(SSD1306_SWITCHCAPVCC,0x3C)){
-Serial.println("OLED failed");
-while(true);
+  display.setCursor(10, 30);
+  display.print(message);
+
+  display.display();
 }
 
-display.setTextColor(WHITE);
+// ---------------- ULTRASONIC ----------------
+int getDistance() {
+  digitalWrite(TRIG_PIN, LOW);
+  delayMicroseconds(2);
+  digitalWrite(TRIG_PIN, HIGH);
+  delayMicroseconds(10);
+  digitalWrite(TRIG_PIN, LOW);
 
-display.clearDisplay();
-display.setTextSize(2);
-display.setCursor(15,20);
-display.println("SMART BIN");
-display.display();
+  long dur = pulseIn(ECHO_PIN, HIGH, 20000);
+  if (dur == 0) return 999;
 
-delay(2000);
+  return dur * 0.034 / 2;
 }
 
-void loop(){
+// ---------------- SETUP ----------------
+void setup() {
+  Serial.begin(9600);
+  BT.begin(9600);
 
-int waterValue = analogRead(waterSensor);
-int distance = getDistance();
+  display.begin(SSD1306_SWITCHCAPVCC, OLED_ADDR);
 
-Serial.print("Water: ");
-Serial.print(waterValue);
-Serial.print(" Distance: ");
-Serial.println(distance);
+  display.clearDisplay();
+  display.setTextSize(2);
+  display.setCursor(10, 20);
+  display.print("VERDEON");
+  display.display();
+  delay(1500);
 
-/* -------- WET WASTE -------- */
+  updateDisplay("VERDEON");
 
-if(waterValue > 500){
+  myServo.attach(SERVO_PIN);
+  myServo.write(90);
 
-wetCount++;
-
-showStatus("WET WASTE");
-
-myServo.write(150);
-delay(2000);
-myServo.write(90);
-
-delay(2000);
+  pinMode(TRIG_PIN, OUTPUT);
+  pinMode(ECHO_PIN, INPUT);
 }
 
-/* -------- DRY WASTE -------- */
+// ---------------- LOOP ----------------
+void loop() {
 
-else if(distance < 5 && objectDetected == false){
+  int distance = getDistance();
+  int moisture = analogRead(MOISTURE_PIN);
+  unsigned long currentMillis = millis();
 
-objectDetected = true;
+  Serial.print("Moisture: ");
+  Serial.println(moisture);
 
-dryCount++;
+  // -------- PRIORITY: MOISTURE DIRECT --------
+  if (!actionLock && moisture < WET_THRESHOLD) {
 
-showStatus("DRY WASTE");
+    wetCount++;
+    updateDisplay("WET WASTE");
+    myServo.write(30);
 
-myServo.write(30);
-delay(2000);
-myServo.write(90);
+    delay(2000);
 
-delay(2000);
-}
+    myServo.write(90);
+    updateDisplay("Thank You");
+    delay(2000);
 
-if(distance > 8){
-objectDetected = false;
-}
+    updateDisplay("VERDEON");
 
-updateDisplay();
+    actionLock = true;
+  }
 
-sendBluetoothAlerts();
+  // -------- ULTRASONIC TRIGGER --------
+  if (!actionLock && distance < 3) {
+    decisionStart = currentMillis;
+    state = 1;
+    actionLock = true;
+  }
 
-delay(200);
-}
+  // -------- WAIT 1 SECOND THEN DECIDE --------
+  if (state == 1 && currentMillis - decisionStart >= 1000) {
 
-int getDistance(){
+    int moistureNow = analogRead(MOISTURE_PIN);
 
-digitalWrite(trig,LOW);
-delayMicroseconds(2);
+    if (moistureNow < WET_THRESHOLD) {
+      wetCount++;
+      updateDisplay("WET WASTE");
+      myServo.write(30);
 
-digitalWrite(trig,HIGH);
-delayMicroseconds(10);
-digitalWrite(trig,LOW);
+      if (wetCount >= 3) {
+        BT.print("VERDEON ALERT: Wet waste full\r\n");
+        wetCount = 0;
+      }
+    } else {
+      dryCount++;
+      updateDisplay("DRY WASTE");
+      myServo.write(150);
 
-long duration = pulseIn(echo,HIGH,30000);
+      if (dryCount >= 3) {
+        BT.print("VERDEON ALERT: Dry waste full\r\n");
+        dryCount = 0;
+      }
+    }
 
-int distance = duration * 0.034 / 2;
+    previousMillis = currentMillis;
+    state = 2;
+  }
 
-return distance;
-}
+  // -------- HOLD RESULT --------
+  if (state == 2 && currentMillis - previousMillis > 2000) {
+    myServo.write(90);
+    updateDisplay("Thank You");
 
-/* -------- OLED DISPLAY -------- */
+    previousMillis = currentMillis;
+    state = 3;
+  }
 
-void updateDisplay(){
+  // -------- BACK TO READY --------
+  if (state == 3 && currentMillis - previousMillis > 2000) {
+    updateDisplay("VERDEON");
+    state = 0;
+  }
 
-display.clearDisplay();
+  // -------- RESET LOCK --------
+  if (distance > 10 && moisture > WET_THRESHOLD) {
+    actionLock = false;
+  }
 
-display.setTextSize(2);
-
-display.setCursor(0,0);
-display.print("W:");
-display.print(wetCount);
-
-display.setCursor(70,0);
-display.print("D:");
-display.print(dryCount);
-
-display.display();
-}
-
-void showStatus(String message){
-
-display.clearDisplay();
-
-display.setTextSize(2);
-
-display.setCursor(0,0);
-display.print("W:");
-display.print(wetCount);
-
-display.setCursor(70,0);
-display.print("D:");
-display.print(dryCount);
-
-display.setCursor(0,35);
-display.println(message);
-
-display.display();
-}
-
-/* -------- BLUETOOTH ALERT -------- */
-
-void sendBluetoothAlerts(){
-
-if(wetCount >= 5 && wetAlertSent == false){
-
-BT.println("VERDEON ALERT");
-BT.println("WET WASTE FULL");
-
-Serial.println("Wet alert sent");
-
-wetAlertSent = true;
-}
-
-if(dryCount >= 5 && dryAlertSent == false){
-
-BT.println("VERDEON ALERT");
-BT.println("DRY WASTE FULL");
-
-Serial.println("Dry alert sent");
-
-dryAlertSent = true;
-}
-
+  delay(50);
 }
